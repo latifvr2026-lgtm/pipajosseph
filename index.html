@@ -1,9 +1,10 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pipajosseph - Multijugador con Nombres</title>
+    <!-- Librería PeerJS para conexión Multijugador WebRTC -->
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         body {
@@ -39,6 +40,7 @@
     </style>
 </head>
 <body>
+
     <!-- PANTALLA 1: ELEGIR PERSONAJE Y NOMBRE -->
     <div id="screen-character" class="container">
         <h1>Pipajosseph</h1>
@@ -81,14 +83,13 @@
         </select>
         <br>
         <button onclick="startMultiplayerGame()">¡Iniciar Partida!</button>
-        <p style="font-size:12px;color:#ccc">Comparte el código (6 caracteres). Si la sala está llena, los nuevos intentos fallarán.</p>
     </div>
 
     <!-- PANTALLA 4: UNIRSE -->
     <div id="screen-join" class="container hidden">
         <h1>Unirse a Sala</h1>
         <input type="text" id="join-code" placeholder="Pega el código aquí" maxlength="6">
-        <p id="join-status" style="min-height:1.2em"></p>
+        <p id="join-status"></p>
         <button onclick="joinRoom()">Conectar</button>
     </div>
 
@@ -102,614 +103,491 @@
     </div>
 
     <script>
-    // --- VARIABLES GLOBALES ---
-    let myCharacter = "";
-    let peer = null;
-    let connections = []; 
-    let hostConnection = null; 
-    let isHost = false;
-    let playersData = {}; 
-    let boxesData = [];
-    let myId = "";
-    let currentMap = "base";
-    let matchTime = 300; // 5 minutos en segundos
+        // --- VARIABLES GLOBALES ---
+        let myCharacter = "";
+        let peer = null;
+        let connections = []; 
+        let hostConnection = null; 
+        let isHost = false;
+        let playersData = {}; 
+        let boxesData = [];
+        let myId = "";
+        let currentMap = "base";
+        let matchTime = 300; // 5 minutos en segundos
 
-    let myPlayer = {
-        id: "", name: "Jugador", x: 0, y: 0, 
-        width: 50, height: 50,
-        baseSpeed: 4, speed: 4,
-        imgSrc: "", angle: 0,
-        health: 100,
-        shield: false,
-        kills: 0,
-        deaths: 0,
-        bullets: []
-    };
-
-    let keys = { w: false, a: false, s: false, d: false, shift: false, c: false };
-    let mouse = { x: 0, y: 0 };
-    const canvas = document.getElementById('game-canvas');
-    const ctx = canvas.getContext('2d');
-    const loadedImages = {};
-
-    // --- UI / Selección personaje ---
-    function selectChar(imgUrl, cardId) {
-        myCharacter = imgUrl;
-        document.querySelectorAll('.char-card').forEach(el => el.classList.remove('selected'));
-        document.getElementById(cardId).classList.add('selected');
-        checkReadyToContinue();
-    }
-
-    document.getElementById('player-name-input').addEventListener('input', checkReadyToContinue);
-
-    function checkReadyToContinue() {
-        const nameVal = document.getElementById('player-name-input').value.trim();
-        if (myCharacter !== "" && nameVal.length > 0) {
-            document.getElementById('btn-continue').classList.remove('hidden');
-        } else {
-            document.getElementById('btn-continue').classList.add('hidden');
-        }
-    }
-
-    function goToMainMenu() {
-        const nameVal = document.getElementById('player-name-input').value.trim();
-        myPlayer.name = nameVal !== "" ? nameVal : "Pipajosseph";
-        myPlayer.imgSrc = myCharacter;
-        loadedImages[myCharacter] = new Image();
-        loadedImages[myCharacter].src = myCharacter;
-
-        document.getElementById('screen-character').classList.add('hidden');
-        document.getElementById('screen-menu').classList.remove('hidden');
-    }
-
-    function showJoin() {
-        document.getElementById('screen-menu').classList.add('hidden');
-        document.getElementById('screen-join').classList.remove('hidden');
-    }
-
-    function generateShortCode() {
-        return Math.random().toString(36).substring(2, 8).toUpperCase();
-    }
-
-    // --- PEERJS UTIL helpers ---
-    function createPeerWithHandlers(requestedId = null) {
-        // Use default PeerJS cloud server (por defecto). debug=2 para logs en consola.
-        let p;
-        try {
-            p = requestedId ? new Peer(requestedId, { debug: 2 }) : new Peer(undefined, { debug: 2 });
-        } catch (err) {
-            console.error('Error creando Peer:', err);
-            p = requestedId ? new Peer(requestedId, { debug: 2 }) : new Peer(undefined, { debug: 2 });
-        }
-
-        p.on('open', (id) => {
-            console.log('Peer open id=', id);
-            myId = id;
-        });
-
-        p.on('error', (err) => {
-            console.warn('Peer error:', err);
-            // Manejo simple para id en uso (unavailable-id)
-            if (err && err.type === 'unavailable-id') {
-                console.warn('ID solicitado no disponible, generando uno alternativo...');
-                // intenta recrear el peer con id alternativo
-                const altId = (requestedId ? requestedId : 'pipa') + '-' + Math.floor(Math.random() * 1000);
-                try {
-                    p.destroy && p.destroy();
-                } catch(e) {}
-                peer = createPeerWithHandlers(altId);
-            } else {
-                // mostrar mensaje al usuario
-                alert('Error en la conexión P2P: ' + (err && err.message ? err.message : String(err)));
-            }
-        });
-
-        p.on('disconnected', () => {
-            console.warn('Peer desconectado');
-            // PeerJS no siempre reconecta automáticamente; notificar al usuario.
-            // Intentar reconectar simple: crear un nuevo Peer (esto lo mantenemos simple).
-            // En uso real, mejor desplegar PeerServer propio para reconexiones.
-        });
-
-        p.on('close', () => {
-            console.log('Peer closed');
-        });
-
-        return p;
-    }
-
-    // --- LÓGICA PEERJS (MULTIJUGADOR) ---
-    function setupHost() {
-        isHost = true;
-        document.getElementById('screen-menu').classList.add('hidden');
-        document.getElementById('screen-host').classList.remove('hidden');
+        let myPlayer = {
+            id: "", name: "Jugador", x: 0, y: 0, 
+            width: 50, height: 50,
+            baseSpeed: 4, speed: 4,
+            imgSrc: "", angle: 0,
+            health: 100,
+            shield: false,
+            kills: 0,
+            deaths: 0,
+            bullets: []
+        };
         
-        const roomCode = generateShortCode();
-        myId = roomCode;
-        // usamos 'pipa-' + roomCode como id del host para que sea fácil de conectar
-        peer = createPeerWithHandlers('pipa-' + roomCode);
+        let keys = { w: false, a: false, s: false, d: false, shift: false, c: false };
+        let mouse = { x: 0, y: 0 };
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+        const loadedImages = {};
 
-        peer.on('open', (id) => {
-            document.getElementById('room-code-display').innerText = roomCode;
-            myPlayer.id = id;
-            // center spawn
-            myPlayer.x = window.innerWidth / 2 + (Math.random() * 100 - 50);
-            myPlayer.y = window.innerHeight / 2 + (Math.random() * 100 - 50);
-            playersData[id] = Object.assign({}, myPlayer);
-            generateBoxes();
-        });
+        // --- NAVEGACIÓN DE MENÚS ---
+        function selectChar(imgUrl, cardId) {
+            myCharacter = imgUrl;
+            document.querySelectorAll('.char-card').forEach(el => el.classList.remove('selected'));
+            document.getElementById(cardId).classList.add('selected');
+            checkReadyToContinue();
+        }
 
-        peer.on('connection', (conn) => {
-            // límite 2 conexiones entrantes (host + 2 = 3 jugadores)
-            if (connections.length >= 2) {
-                conn.on('open', () => {
+        document.getElementById('player-name-input').addEventListener('input', checkReadyToContinue);
+
+        function checkReadyToContinue() {
+            const nameVal = document.getElementById('player-name-input').value.trim();
+            if (myCharacter !== "" && nameVal.length > 0) {
+                document.getElementById('btn-continue').classList.remove('hidden');
+            } else {
+                document.getElementById('btn-continue').classList.add('hidden');
+            }
+        }
+
+        function goToMainMenu() {
+            const nameVal = document.getElementById('player-name-input').value.trim();
+            myPlayer.name = nameVal !== "" ? nameVal : "Pipajosseph";
+            myPlayer.imgSrc = myCharacter;
+
+            loadedImages[myCharacter] = new Image();
+            loadedImages[myCharacter].src = myCharacter;
+
+            document.getElementById('screen-character').classList.add('hidden');
+            document.getElementById('screen-menu').classList.remove('hidden');
+        }
+
+        function showJoin() {
+            document.getElementById('screen-menu').classList.add('hidden');
+            document.getElementById('screen-join').classList.remove('hidden');
+        }
+
+        function generateShortCode() {
+            return Math.random().toString(36).substring(2, 8).toUpperCase();
+        }
+
+        // --- LÓGICA PEERJS (MULTIJUGADOR) ---
+        function setupHost() {
+            isHost = true;
+            document.getElementById('screen-menu').classList.add('hidden');
+            document.getElementById('screen-host').classList.remove('hidden');
+            
+            const roomCode = generateShortCode();
+            myId = roomCode;
+            
+            peer = new Peer('pipa-' + roomCode);
+
+            peer.on('open', (id) => {
+                document.getElementById('room-code-display').innerText = roomCode;
+                myPlayer.id = id;
+                playersData[id] = myPlayer;
+                generateBoxes();
+            });
+
+            peer.on('connection', (conn) => {
+                if(connections.length >= 2) {
                     conn.send({ type: 'full' });
                     setTimeout(() => conn.close(), 500);
-                });
-                return;
-            }
-
-            connections.push(conn);
-            document.getElementById('player-count').innerText = connections.length + 1;
-
-            // crear un placeholder para este jugador hasta recibir su primer update
-            playersData[conn.peer] = playersData[conn.peer] || {
-                id: conn.peer, name: 'Jugador', x: canvas.width/2, y: canvas.height/2,
-                width: 50, height: 50, baseSpeed: 4, health: 100, shield: false,
-                kills: 0, deaths: 0, imgSrc: ''
-            };
-
-            conn.on('open', () => {
-                // enviar al nuevo jugador el estado actual para sincronizar inmediatamente
-                conn.send({ type: 'sync', players: playersData, boxes: boxesData, time: matchTime });
-            });
-
-            conn.on('data', (data) => {
-                // cliente envía actualizaciones periódicas
-                if (data.type === 'update' && data.player && data.player.id) {
-                    // preservar campos del servidor que no confía exclusivamente en el cliente
-                    if (playersData[data.player.id]) {
-                        data.player.health = playersData[data.player.id].health;
-                        data.player.shield = playersData[data.player.id].shield;
-                        data.player.width = playersData[data.player.id].width;
-                        data.player.height = playersData[data.player.id].height;
-                        data.player.baseSpeed = playersData[data.player.id].baseSpeed;
-                        data.player.kills = playersData[data.player.id].kills;
-                        data.player.deaths = playersData[data.player.id].deaths;
-                    }
-                    playersData[data.player.id] = data.player;
+                    return;
                 }
-            });
-
-            conn.on('close', () => {
-                connections = connections.filter(c => c !== conn);
-                delete playersData[conn.peer];
+                
+                connections.push(conn);
                 document.getElementById('player-count').innerText = connections.length + 1;
-            });
 
-            conn.on('error', (err) => {
-                console.warn('Conn error from', conn.peer, err);
-            });
-        });
-    }
-
-    function joinRoom() {
-        const code = document.getElementById('join-code').value.toUpperCase().trim();
-        if(!code) return;
-        
-        document.getElementById('join-status').innerText = "Conectando...";
-        peer = createPeerWithHandlers(); 
-        
-        peer.on('open', (id) => {
-            myPlayer.id = id;
-            myPlayer.x = window.innerWidth / 2 + (Math.random() * 100 - 50);
-            myPlayer.y = window.innerHeight / 2 + (Math.random() * 100 - 50);
-
-            hostConnection = peer.connect('pipa-' + code, { reliable: true });
-
-            hostConnection.on('open', () => {
-                document.getElementById('join-status').innerText = "¡Conectado! Esperando que el anfitrión inicie...";
-                // mandar estado inicial al host
-                hostConnection.send({ type: 'update', player: myPlayer });
-            });
-
-            hostConnection.on('data', (data) => {
-                if(data.type === 'start') {
-                    currentMap = data.map;
-                    playersData = data.players || {};
-                    boxesData = data.boxes || [];
-                    matchTime = data.time || matchTime;
-                    // asegurar que miPlayer preserve su id y balas
-                    if(playersData[myPlayer.id]) {
-                        myPlayer.health = playersData[myPlayer.id].health;
-                        myPlayer.shield = playersData[myPlayer.id].shield;
-                        myPlayer.width = playersData[myPlayer.id].width;
-                        myPlayer.height = playersData[myPlayer.id].height;
-                        myPlayer.baseSpeed = playersData[myPlayer.id].baseSpeed;
-                        myPlayer.kills = playersData[myPlayer.id].kills;
-                        myPlayer.deaths = playersData[myPlayer.id].deaths;
+                conn.on('data', (data) => {
+                    if(data.type === 'update') {
+                        if(playersData[data.player.id]) {
+                            data.player.health = playersData[data.player.id].health;
+                            data.player.shield = playersData[data.player.id].shield;
+                            data.player.width = playersData[data.player.id].width;
+                            data.player.height = playersData[data.player.id].height;
+                            data.player.baseSpeed = playersData[data.player.id].baseSpeed;
+                            data.player.kills = playersData[data.player.id].kills;
+                            data.player.deaths = playersData[data.player.id].deaths;
+                        }
+                        playersData[data.player.id] = data.player;
                     }
-                    launchCanvas();
-                } else if (data.type === 'sync') {
-                    // host manda sincronizaciones
-                    let localBullets = myPlayer.bullets;
-                    playersData = data.players || playersData;
-                    boxesData = data.boxes || boxesData;
-                    matchTime = data.time || matchTime;
-                    if(playersData[myPlayer.id]) {
-                        myPlayer.health = playersData[myPlayer.id].health;
-                        myPlayer.shield = playersData[myPlayer.id].shield;
-                        myPlayer.width = playersData[myPlayer.id].width;
-                        myPlayer.height = playersData[myPlayer.id].height;
-                        myPlayer.baseSpeed = playersData[myPlayer.id].baseSpeed;
-                        myPlayer.kills = playersData[myPlayer.id].kills;
-                        myPlayer.deaths = playersData[myPlayer.id].deaths;
-                    }
-                    myPlayer.bullets = localBullets;
-                } else if (data.type === 'full') {
-                    alert("La sala está llena");
-                }
-            });
+                });
 
-            hostConnection.on('close', () => {
-                document.getElementById('join-status').innerText = "Conexión con el anfitrión cerrada.";
-            });
-
-            hostConnection.on('error', (err) => {
-                console.warn('Host connection error:', err);
-                document.getElementById('join-status').innerText = "Error al conectar con el anfitrión.";
-            });
-        });
-    }
-
-    function generateBoxes() {
-        boxesData = [];
-        const types = ['heal', 'shield', 'giant', 'speed'];
-        for(let i = 0; i < 4; i++) {
-            boxesData.push({
-                x: Math.random() * (window.innerWidth - 100) + 50,
-                y: Math.random() * (window.innerHeight - 100) + 50,
-                type: types[Math.floor(Math.random() * types.length)]
+                conn.on('close', () => {
+                    connections = connections.filter(c => c !== conn);
+                    delete playersData[conn.peer];
+                    document.getElementById('player-count').innerText = connections.length + 1;
+                });
             });
         }
-    }
 
-    function startMultiplayerGame() {
-        currentMap = document.getElementById('map-select').value;
-        // asegurar que host tenga su estado actualizado en playersData
-        playersData[myPlayer.id] = myPlayer;
+        function joinRoom() {
+            const code = document.getElementById('join-code').value.toUpperCase();
+            if(!code) return;
+            
+            document.getElementById('join-status').innerText = "Conectando...";
+            peer = new Peer(); 
+            
+            peer.on('open', (id) => {
+                myPlayer.id = id;
+                
+                hostConnection = peer.connect('pipa-' + code);
+                
+                hostConnection.on('open', () => {
+                    document.getElementById('join-status').innerText = "¡Conectado! Esperando que el anfitrión inicie...";
+                    hostConnection.send({ type: 'update', player: myPlayer });
+                });
 
-        connections.forEach(conn => {
-            try {
+                hostConnection.on('data', (data) => {
+                    if(data.type === 'start') {
+                        currentMap = data.map;
+                        playersData = data.players;
+                        boxesData = data.boxes;
+                        matchTime = data.time;
+                        launchCanvas();
+                    } else if (data.type === 'sync') {
+                        let localBullets = myPlayer.bullets;
+                        playersData = data.players;
+                        boxesData = data.boxes;
+                        matchTime = data.time;
+                        if(playersData[myPlayer.id]) {
+                            myPlayer.health = playersData[myPlayer.id].health;
+                            myPlayer.shield = playersData[myPlayer.id].shield;
+                            myPlayer.width = playersData[myPlayer.id].width;
+                            myPlayer.height = playersData[myPlayer.id].height;
+                            myPlayer.baseSpeed = playersData[myPlayer.id].baseSpeed;
+                            myPlayer.kills = playersData[myPlayer.id].kills;
+                            myPlayer.deaths = playersData[myPlayer.id].deaths;
+                        }
+                        myPlayer.bullets = localBullets;
+                    } else if (data.type === 'full') {
+                        alert("La sala está llena");
+                    }
+                });
+            });
+        }
+
+        function generateBoxes() {
+            boxesData = [];
+            const types = ['heal', 'shield', 'giant', 'speed'];
+            for(let i = 0; i < 4; i++) {
+                boxesData.push({
+                    x: Math.random() * (window.innerWidth - 100) + 50,
+                    y: Math.random() * (window.innerHeight - 100) + 50,
+                    type: types[Math.floor(Math.random() * types.length)]
+                });
+            }
+        }
+
+        function startMultiplayerGame() {
+            currentMap = document.getElementById('map-select').value;
+            connections.forEach(conn => {
                 conn.send({ type: 'start', map: currentMap, players: playersData, boxes: boxesData, time: matchTime });
-            } catch(e) {
-                console.warn('Error enviando start a', conn.peer, e);
-            }
-        });
-        launchCanvas();
-    }
-
-    // --- MOTOR DEL JUEGO ---
-    function launchCanvas() {
-        document.querySelectorAll('.container').forEach(el => el.classList.add('hidden'));
-        canvas.style.display = 'block';
-        document.getElementById('ui-layer').classList.remove('hidden');
-        
-        let mapName = currentMap === 'base' ? 'Base Militar' : currentMap === 'desert' ? 'Desierto' : 'Cyberpunk';
-        document.getElementById('ui-map').innerText = mapName;
-
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-        
-        // asegurar spawn
-        myPlayer.x = myPlayer.x || canvas.width / 2 + (Math.random() * 100 - 50);
-        myPlayer.y = myPlayer.y || canvas.height / 2 + (Math.random() * 100 - 50);
-
-        // cargar imágenes de todos los jugadores
-        Object.values(playersData).forEach(p => {
-            if(p.imgSrc && !loadedImages[p.imgSrc]) {
-                loadedImages[p.imgSrc] = new Image();
-                loadedImages[p.imgSrc].src = p.imgSrc;
-            }
-        });
-
-        // asegurar la imagen local cargada
-        if(myPlayer.imgSrc && !loadedImages[myPlayer.imgSrc]) {
-            loadedImages[myPlayer.imgSrc] = new Image();
-            loadedImages[myPlayer.imgSrc].src = myPlayer.imgSrc;
-        }
-
-        requestAnimationFrame(gameLoop);
-        setInterval(networkTick, 1000 / 30); // 30 ticks por segundo
-
-        if (isHost) {
-            setInterval(() => {
-                if (matchTime > 0) matchTime--;
-            }, 1000);
-        }
-    }
-
-    // Controles
-    window.addEventListener('keydown', (e) => {
-        const k = e.key.toLowerCase();
-        if(k === 'w') keys.w = true;
-        if(k === 'a') keys.a = true;
-        if(k === 's') keys.s = true;
-        if(k === 'd') keys.d = true;
-        if(e.key === 'Shift') keys.shift = true;
-        if(k === 'c') keys.c = true;
-    });
-
-    window.addEventListener('keyup', (e) => {
-        const k = e.key.toLowerCase();
-        if(k === 'w') keys.w = false;
-        if(k === 'a') keys.a = false;
-        if(k === 's') keys.s = false;
-        if(k === 'd') keys.d = false;
-        if(e.key === 'Shift') keys.shift = false;
-        if(k === 'c') keys.c = false;
-    });
-
-    window.addEventListener('mousemove', (e) => {
-        mouse.x = e.clientX;
-        mouse.y = e.clientY;
-    });
-
-    window.addEventListener('mousedown', () => {
-        if (canvas.style.display === 'block' && myPlayer.health > 0 && matchTime > 0) {
-            const angle = Math.atan2(mouse.y - myPlayer.y, mouse.x - myPlayer.x);
-            myPlayer.bullets.push({
-                x: myPlayer.x, y: myPlayer.y,
-                vx: Math.cos(angle) * 15,
-                vy: Math.sin(angle) * 15,
-                owner: myPlayer.id
             });
+            launchCanvas();
         }
-    });
 
-    function drawMap() {
-        let bgColor, lineColor;
-        if(currentMap === 'desert') { bgColor = '#d2b48c'; lineColor = '#c2a47c'; }
-        else if(currentMap === 'grid') { bgColor = '#0f0f1b'; lineColor = '#00ffcc'; }
-        else { bgColor = '#2b2b2b'; lineColor = '#3d3d3d'; }
+        // --- MOTOR DEL JUEGO ---
+        function launchCanvas() {
+            document.querySelectorAll('.container').forEach(el => el.classList.add('hidden'));
+            canvas.style.display = 'block';
+            document.getElementById('ui-layer').classList.remove('hidden');
+            
+            let mapName = currentMap === 'base' ? 'Base Militar' : currentMap === 'desert' ? 'Desierto' : 'Cyberpunk';
+            document.getElementById('ui-map').innerText = mapName;
 
-        ctx.fillStyle = bgColor;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        
-        ctx.strokeStyle = lineColor;
-        ctx.lineWidth = currentMap === 'grid' ? 2 : 1;
-        const gridSize = 60;
-        
-        for(let i = 0; i < canvas.width; i += gridSize) {
-            ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, canvas.height); ctx.stroke();
-        }
-        for(let i = 0; i < canvas.height; i += gridSize) {
-            ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(canvas.width, i); ctx.stroke();
-        }
-    }
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            
+            myPlayer.x = canvas.width / 2 + (Math.random() * 100 - 50);
+            myPlayer.y = canvas.height / 2 + (Math.random() * 100 - 50);
 
-    function gameLoop() {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        drawMap();
-
-        let mins = Math.floor(matchTime / 60);
-        let secs = matchTime % 60;
-        document.getElementById('ui-timer').innerText = `${mins.toString().padStart(2,'0')}:${secs.toString().padStart(2,'0')}`;
-        document.getElementById('ui-shield').innerText = myPlayer.shield ? "SÍ" : "NO";
-        document.getElementById('ui-kills').innerText = myPlayer.kills;
-
-        // PANTALLA DE FIN DE JUEGO
-        if (matchTime <= 0) {
-            ctx.fillStyle = "rgba(10, 10, 20, 0.9)";
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-            ctx.fillStyle = "#e94560";
-            ctx.font = "bold 40px Arial";
-            ctx.textAlign = "center";
-            ctx.fillText("¡PARTIDA FINALIZADA!", canvas.width / 2, canvas.height / 2 - 160);
-
-            let sortedPlayers = Object.values(playersData).sort((a, b) => b.kills - a.kills);
-            let winner = sortedPlayers[0] || myPlayer;
-
-            ctx.fillStyle = "#00ffcc";
-            ctx.font = "28px Arial";
-            ctx.fillText(`🏆 Ganador: ${winner.name} (${winner.kills} Kills)`, canvas.width / 2, canvas.height / 2 - 110);
-
-            ctx.fillStyle = "#16213e";
-            ctx.fillRect(canvas.width / 2 - 250, canvas.height / 2 - 70, 500, 220);
-            ctx.strokeStyle = "#e94560";
-            ctx.lineWidth = 3;
-            ctx.strokeRect(canvas.width / 2 - 250, canvas.height / 2 - 70, 500, 220);
-
-            ctx.fillStyle = "#fff";
-            ctx.font = "bold 20px Arial";
-            ctx.fillText("MARCADOR FINAL", canvas.width / 2, canvas.height / 2 - 35);
-
-            ctx.font = "16px Arial";
-            ctx.fillText("Jugador", canvas.width / 2 - 150, canvas.height / 2);
-            ctx.fillText("Kills", canvas.width / 2 + 20, canvas.height / 2);
-            ctx.fillText("Muertes", canvas.width / 2 + 130, canvas.height / 2);
-
-            let yOffset = 30;
-            sortedPlayers.forEach((p, index) => {
-                ctx.fillStyle = p.id === myPlayer.id ? "#00ffcc" : "#fff";
-                ctx.fillText(`${index + 1}. ${p.name}`, canvas.width / 2 - 150, canvas.height / 2 + yOffset);
-                ctx.fillText(p.kills, canvas.width / 2 + 20, canvas.height / 2 + yOffset);
-                ctx.fillText(p.deaths, canvas.width / 2 + 130, canvas.height / 2 + yOffset);
-                yOffset += 35;
+            Object.values(playersData).forEach(p => {
+                if(!loadedImages[p.imgSrc]) {
+                    loadedImages[p.imgSrc] = new Image();
+                    loadedImages[p.imgSrc].src = p.imgSrc;
+                }
             });
 
             requestAnimationFrame(gameLoop);
-            return;
-        }
+            setInterval(networkTick, 1000 / 30); 
 
-        // movimiento local
-        if (myPlayer.health > 0) {
-            if (keys.shift) {
-                myPlayer.speed = myPlayer.baseSpeed * 1.8;
-            } else if (keys.c) {
-                myPlayer.speed = myPlayer.baseSpeed * 0.4;
-            } else {
-                myPlayer.speed = myPlayer.baseSpeed;
+            if (isHost) {
+                setInterval(() => {
+                    if (matchTime > 0) matchTime--;
+                }, 1000);
             }
-
-            if(keys.w && myPlayer.y > 0) myPlayer.y -= myPlayer.speed;
-            if(keys.s && myPlayer.y < canvas.height) myPlayer.y += myPlayer.speed;
-            if(keys.a && myPlayer.x > 0) myPlayer.x -= myPlayer.speed;
-            if(keys.d && myPlayer.x < canvas.width) myPlayer.x += myPlayer.speed;
-
-            myPlayer.angle = Math.atan2(mouse.y - myPlayer.y, mouse.x - myPlayer.x);
         }
 
-        // Cajas de Habilidades
-        boxesData.forEach((box, index) => {
-            ctx.fillStyle = box.type === 'heal' ? '#ff3366' : 
-                            box.type === 'shield' ? '#00ccff' : 
-                            box.type === 'giant' ? '#ffcc00' : '#33cc33';
-            ctx.fillRect(box.x - 15, box.y - 15, 30, 30);
-            ctx.strokeStyle = '#fff';
-            ctx.strokeRect(box.x - 15, box.y - 15, 30, 30);
+        // Controles
+        window.addEventListener('keydown', (e) => {
+            const k = e.key.toLowerCase();
+            if(k === 'w') keys.w = true;
+            if(k === 'a') keys.a = true;
+            if(k === 's') keys.s = true;
+            if(k === 'd') keys.d = true;
+            if(e.key === 'Shift') keys.shift = true;
+            if(k === 'c') keys.c = true;
+        });
 
-            ctx.fillStyle = '#fff';
-            ctx.font = "12px Arial";
-            ctx.textAlign = "center";
-            ctx.fillText(box.type[0].toUpperCase(), box.x, box.y + 4);
+        window.addEventListener('keyup', (e) => {
+            const k = e.key.toLowerCase();
+            if(k === 'w') keys.w = false;
+            if(k === 'a') keys.a = false;
+            if(k === 's') keys.s = false;
+            if(k === 'd') keys.d = false;
+            if(e.key === 'Shift') keys.shift = false;
+            if(k === 'c') keys.c = false;
+        });
 
-            let dist = Math.hypot(myPlayer.x - box.x, myPlayer.y - box.y);
-            if (dist < 40 && myPlayer.health > 0) {
-                if (box.type === 'heal') {
-                    myPlayer.health = 100;
-                } else if (box.type === 'shield') {
-                    myPlayer.shield = true;
-                } else if (box.type === 'giant') {
-                    myPlayer.width = 80;
-                    myPlayer.height = 80;
-                } else if (box.type === 'speed') {
-                    myPlayer.baseSpeed = 7;
-                }
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+        });
 
-                boxesData.splice(index, 1);
-                if (isHost) {
-                    setTimeout(() => {
-                        const types = ['heal', 'shield', 'giant', 'speed'];
-                        boxesData.push({
-                            x: Math.random() * (canvas.width - 100) + 50,
-                            y: Math.random() * (canvas.height - 100) + 50,
-                            type: types[Math.floor(Math.random() * types.length)]
-                        });
-                    }, 5000);
-                }
+        window.addEventListener('mousedown', () => {
+            if (canvas.style.display === 'block' && myPlayer.health > 0 && matchTime > 0) {
+                const angle = Math.atan2(mouse.y - myPlayer.y, mouse.x - myPlayer.x);
+                myPlayer.bullets.push({
+                    x: myPlayer.x, y: myPlayer.y,
+                    vx: Math.cos(angle) * 15,
+                    vy: Math.sin(angle) * 15,
+                    owner: myPlayer.id
+                });
             }
         });
 
-        // Actualizar balas y colisiones (solo balas locales)
-        for (let i = myPlayer.bullets.length - 1; i >= 0; i--) {
-            let b = myPlayer.bullets[i];
-            b.x += b.vx; b.y += b.vy;
+        function drawMap() {
+            let bgColor, lineColor;
+            if(currentMap === 'desert') { bgColor = '#d2b48c'; lineColor = '#c2a47c'; }
+            else if(currentMap === 'grid') { bgColor = '#0f0f1b'; lineColor = '#00ffcc'; }
+            else { bgColor = '#2b2b2b'; lineColor = '#3d3d3d'; }
+
+            ctx.fillStyle = bgColor;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
             
-            ctx.fillStyle = '#00ffcc';
-            ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, Math.PI * 2); ctx.fill();
+            ctx.strokeStyle = lineColor;
+            ctx.lineWidth = currentMap === 'grid' ? 2 : 1;
+            const gridSize = 60;
+            
+            for(let i = 0; i < canvas.width; i += gridSize) {
+                ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, canvas.height); ctx.stroke();
+            }
+            for(let i = 0; i < canvas.height; i += gridSize) {
+                ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(canvas.width, i); ctx.stroke();
+            }
+        }
 
-            Object.values(playersData).forEach(target => {
-                if (target && target.id !== myPlayer.id && target.health > 0) {
-                    let dist = Math.hypot(b.x - target.x, b.y - target.y);
-                    if (dist < target.width / 2 + 10) { 
-                        myPlayer.bullets.splice(i, 1);
+        function gameLoop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawMap();
 
-                        if (target.shield) {
-                            target.shield = false; 
-                        } else {
-                            target.health -= 25;
-                        }
-                        
-                        if(target.health <= 0) {
-                            if (b.owner === myPlayer.id) {
-                                myPlayer.kills++;
-                            }
-                            
-                            target.health = 100;
-                            target.shield = false;
-                            target.width = 50;
-                            target.height = 50;
-                            target.baseSpeed = 4;
-                            target.deaths++;
-                            target.x = canvas.width / 2 + (Math.random() * 100 - 50);
-                            target.y = canvas.height / 2 + (Math.random() * 100 - 50);
-                        }
+            let mins = Math.floor(matchTime / 60);
+            let secs = matchTime % 60;
+            document.getElementById('ui-timer').innerText = `${mins.toString().padStart(2,'0')}:${secs.toString().padStart(2,'0')}`;
+            document.getElementById('ui-shield').innerText = myPlayer.shield ? "SÍ" : "NO";
+            document.getElementById('ui-kills').innerText = myPlayer.kills;
+
+            // PANTALLA DE FIN DE JUEGO (TABLA DE RESULTADOS)
+            if (matchTime <= 0) {
+                ctx.fillStyle = "rgba(10, 10, 20, 0.9)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.fillStyle = "#e94560";
+                ctx.font = "bold 40px Arial";
+                ctx.textAlign = "center";
+                ctx.fillText("¡PARTIDA FINALIZADA!", canvas.width / 2, canvas.height / 2 - 160);
+
+                let sortedPlayers = Object.values(playersData).sort((a, b) => b.kills - a.kills);
+                let winner = sortedPlayers[0];
+
+                ctx.fillStyle = "#00ffcc";
+                ctx.font = "28px Arial";
+                ctx.fillText(`🏆 Ganador: ${winner.name} (${winner.kills} Kills)`, canvas.width / 2, canvas.height / 2 - 110);
+
+                ctx.fillStyle = "#16213e";
+                ctx.fillRect(canvas.width / 2 - 250, canvas.height / 2 - 70, 500, 220);
+                ctx.strokeStyle = "#e94560";
+                ctx.lineWidth = 3;
+                ctx.strokeRect(canvas.width / 2 - 250, canvas.height / 2 - 70, 500, 220);
+
+                ctx.fillStyle = "#fff";
+                ctx.font = "bold 20px Arial";
+                ctx.fillText("MARCADOR FINAL", canvas.width / 2, canvas.height / 2 - 35);
+
+                ctx.font = "16px Arial";
+                ctx.fillText("Jugador", canvas.width / 2 - 150, canvas.height / 2);
+                ctx.fillText("Kills", canvas.width / 2 + 20, canvas.height / 2);
+                ctx.fillText("Muertes", canvas.width / 2 + 130, canvas.height / 2);
+
+                let yOffset = 30;
+                sortedPlayers.forEach((p, index) => {
+                    ctx.fillStyle = p.id === myPlayer.id ? "#00ffcc" : "#fff";
+                    ctx.fillText(`${index + 1}. ${p.name}`, canvas.width / 2 - 150, canvas.height / 2 + yOffset);
+                    ctx.fillText(p.kills, canvas.width / 2 + 20, canvas.height / 2 + yOffset);
+                    ctx.fillText(p.deaths, canvas.width / 2 + 130, canvas.height / 2 + yOffset);
+                    yOffset += 35;
+                });
+
+                requestAnimationFrame(gameLoop);
+                return;
+            }
+
+            if (myPlayer.health > 0) {
+                if (keys.shift) {
+                    myPlayer.speed = myPlayer.baseSpeed * 1.8;
+                } else if (keys.c) {
+                    myPlayer.speed = myPlayer.baseSpeed * 0.4;
+                } else {
+                    myPlayer.speed = myPlayer.baseSpeed;
+                }
+
+                if(keys.w && myPlayer.y > 0) myPlayer.y -= myPlayer.speed;
+                if(keys.s && myPlayer.y < canvas.height) myPlayer.y += myPlayer.speed;
+                if(keys.a && myPlayer.x > 0) myPlayer.x -= myPlayer.speed;
+                if(keys.d && myPlayer.x < canvas.width) myPlayer.x += myPlayer.speed;
+
+                myPlayer.angle = Math.atan2(mouse.y - myPlayer.y, mouse.x - myPlayer.x);
+            }
+
+            // Cajas de Habilidades
+            boxesData.forEach((box, index) => {
+                ctx.fillStyle = box.type === 'heal' ? '#ff3366' : 
+                                box.type === 'shield' ? '#00ccff' : 
+                                box.type === 'giant' ? '#ffcc00' : '#33cc33';
+                ctx.fillRect(box.x - 15, box.y - 15, 30, 30);
+                ctx.strokeStyle = '#fff';
+                ctx.strokeRect(box.x - 15, box.y - 15, 30, 30);
+
+                ctx.fillStyle = '#fff';
+                ctx.font = "12px Arial";
+                ctx.textAlign = "center";
+                ctx.fillText(box.type[0].toUpperCase(), box.x, box.y + 4);
+
+                let dist = Math.hypot(myPlayer.x - box.x, myPlayer.y - box.y);
+                if (dist < 40 && myPlayer.health > 0) {
+                    if (box.type === 'heal') {
+                        myPlayer.health = 100;
+                    } else if (box.type === 'shield') {
+                        myPlayer.shield = true;
+                    } else if (box.type === 'giant') {
+                        myPlayer.width = 80;
+                        myPlayer.height = 80;
+                    } else if (box.type === 'speed') {
+                        myPlayer.baseSpeed = 7;
+                    }
+
+                    boxesData.splice(index, 1);
+                    if (isHost) {
+                        setTimeout(() => {
+                            const types = ['heal', 'shield', 'giant', 'speed'];
+                            boxesData.push({
+                                x: Math.random() * (canvas.width - 100) + 50,
+                                y: Math.random() * (canvas.height - 100) + 50,
+                                type: types[Math.floor(Math.random() * types.length)]
+                            });
+                        }, 5000);
                     }
                 }
             });
 
-            if(b && (b.x < 0 || b.x > canvas.width || b.y < 0 || b.y > canvas.height)) {
-                myPlayer.bullets.splice(i, 1);
-            }
-        }
-
-        // actualizar estado local en playersData
-        playersData[myPlayer.id] = myPlayer;
-
-        // Dibujar jugadores
-        Object.values(playersData).forEach(p => {
-            if(!p) return;
-
-            ctx.save();
-            ctx.translate(p.x, p.y);
-            // rotar antes de dibujar la imagen/muzzle
-            ctx.rotate(p.angle || 0);
-
-            if(loadedImages[p.imgSrc] && p.health > 0) {
-                // dibujar sprite centrado (rotado por la translate+rotate)
-                ctx.drawImage(loadedImages[p.imgSrc], -p.width/2, -p.height/2, p.width, p.height);
+            // Actualizar balas y colisiones
+            for (let i = myPlayer.bullets.length - 1; i >= 0; i--) {
+                let b = myPlayer.bullets[i];
+                b.x += b.vx; b.y += b.vy;
                 
-                if (p.shield) {
-                    ctx.strokeStyle = '#00ffcc';
-                    ctx.lineWidth = 4;
-                    ctx.beginPath();
-                    ctx.arc(0, 0, p.width / 1.2, 0, Math.PI * 2);
-                    ctx.stroke();
+                ctx.fillStyle = '#00ffcc';
+                ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, Math.PI * 2); ctx.fill();
+
+                Object.values(playersData).forEach(target => {
+                    if (target.id !== myPlayer.id && target.health > 0) {
+                        let dist = Math.hypot(b.x - target.x, b.y - target.y);
+                        if (dist < target.width / 2 + 10) { 
+                            myPlayer.bullets.splice(i, 1);
+                            
+                            if (target.shield) {
+                                target.shield = false; 
+                            } else {
+                                target.health -= 25;
+                            }
+                            
+                            if(target.health <= 0) {
+                                if (b.owner === myPlayer.id) {
+                                    myPlayer.kills++;
+                                }
+                                
+                                target.health = 100;
+                                target.shield = false;
+                                target.width = 50;
+                                target.height = 50;
+                                target.baseSpeed = 4;
+                                target.deaths++;
+                                target.x = canvas.width / 2 + (Math.random() * 100 - 50);
+                                target.y = canvas.height / 2 + (Math.random() * 100 - 50);
+                            }
+                        }
+                    }
+                });
+
+                if(b && (b.x < 0 || b.x > canvas.width || b.y < 0 || b.y > canvas.height)) {
+                    myPlayer.bullets.splice(i, 1);
                 }
-
-                // dibujar "muzzle" (proyectil saliendo) hacia la derecha del sprite
-                ctx.fillStyle = "white";
-                ctx.fillRect(p.width/2, -3, 15, 6);
-            } else {
-                // placeholder si no hay imagen
-                ctx.fillStyle = p.health > 0 ? '#e94560' : '#555';
-                ctx.fillRect(-p.width/2, -p.height/2, p.width, p.height);
             }
-            ctx.restore();
 
-            if (p.health > 0) {
-                ctx.fillStyle = "red";
-                ctx.fillRect(p.x - 25, p.y - (p.height / 2 + 15), 50, 6);
-                ctx.fillStyle = "lime";
-                ctx.fillRect(p.x - 25, p.y - (p.height / 2 + 15), (50 * p.health) / 100, 6);
+            playersData[myPlayer.id] = myPlayer;
 
-                ctx.fillStyle = "white";
-                ctx.font = "12px Arial";
-                ctx.textAlign = "center";
-                ctx.fillText(p.name, p.x, p.y - (p.height / 2 + 25));
-            }
-        });
+            // Dibujar jugadores
+            Object.values(playersData).forEach(p => {
+                if(!p) return;
 
-        requestAnimationFrame(gameLoop);
-    }
+                ctx.save();
+                ctx.translate(p.x, p.y);
+                
+                if(loadedImages[p.imgSrc] && p.health > 0) {
+                    ctx.drawImage(loadedImages[p.imgSrc], -p.width/2, -p.height/2, p.width, p.height);
+                    
+                    if (p.shield) {
+                        ctx.strokeStyle = '#00ffcc';
+                        ctx.lineWidth = 4;
+                        ctx.beginPath();
+                        ctx.arc(0, 0, p.width / 1.2, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
 
-    function networkTick() {
-        if (isHost) {
-            // host envía sincronizaciones a cada cliente
-            connections.forEach(conn => {
-                try {
-                    conn.send({ type: 'sync', players: playersData, boxes: boxesData, time: matchTime });
-                } catch(e) {
-                    console.warn('Error enviando sync a', conn.peer, e);
+                    ctx.rotate(p.angle);
+                    ctx.fillStyle = "white";
+                    ctx.fillRect(p.width/2, -3, 15, 6);
+                }
+                ctx.restore();
+
+                if (p.health > 0) {
+                    ctx.fillStyle = "red";
+                    ctx.fillRect(p.x - 25, p.y - (p.height / 2 + 15), 50, 6);
+                    ctx.fillStyle = "lime";
+                    ctx.fillRect(p.x - 25, p.y - (p.height / 2 + 15), (50 * p.health) / 100, 6);
+
+                    ctx.fillStyle = "white";
+                    ctx.font = "12px Arial";
+                    ctx.textAlign = "center";
+                    ctx.fillText(p.name, p.x, p.y - (p.height / 2 + 25));
                 }
             });
-        } else if (hostConnection && hostConnection.open) {
-            // cliente envía estado local al host
-            hostConnection.send({ type: 'update', player: myPlayer });
+
+            requestAnimationFrame(gameLoop);
         }
-    }
+
+        function networkTick() {
+            if (isHost) {
+                connections.forEach(conn => {
+                    conn.send({ type: 'sync', players: playersData, boxes: boxesData, time: matchTime });
+                });
+            } else if (hostConnection) {
+                hostConnection.send({ type: 'update', player: myPlayer });
+            }
+        }
     </script>
 </body>
 </html>
